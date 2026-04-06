@@ -55,18 +55,30 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/cron/CronPage.vue'),
         meta: { title: '任务计划', icon: 'time-outline' }
       },
-      {
-        path: 'agents',
-        name: 'Agents',
-        component: () => import('@/views/agents/AgentsPage.vue'),
-        meta: { title: '多智能体', icon: 'people-outline' }
-      },
-      {
-        path: 'system',
-        name: 'System',
-        component: () => import('@/views/system/SystemPage.vue'),
-        meta: { title: '系统监控', icon: 'pulse-outline' }
-      },
+ {
+ path: 'agents',
+ name: 'Agents',
+ component: () => import('@/views/agents/AgentsPage.vue'),
+ meta: { title: '多智能体', icon: 'people-outline' }
+ },
+ {
+ path: 'terminal',
+ name: 'Terminal',
+ component: () => import('@/views/terminal/TerminalPage.vue'),
+ meta: { title: '终端', icon: 'terminal-outline' }
+ },
+ {
+ path: 'files',
+ name: 'Files',
+ component: () => import('@/views/files/FilesPage.vue'),
+ meta: { title: '文件管理', icon: 'folder-outline' }
+ },
+ {
+ path: 'system',
+ name: 'System',
+ component: () => import('@/views/system/SystemPage.vue'),
+ meta: { title: '系统监控', icon: 'pulse-outline' }
+ },
       {
         path: 'settings',
         name: 'Settings',
