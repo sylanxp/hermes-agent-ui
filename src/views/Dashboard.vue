@@ -120,8 +120,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { ChatbubblesOutline, RocketOutline, BulbOutline, FlashOutline } from '@vicons/ionicons5'
+import { wsService } from '@/services/websocket'
 
 const API = '/api'
 const loading = ref(false)
@@ -132,53 +133,79 @@ const systemInfo = ref<any>({})
 const gatewayState = ref<any>({})
 
 function formatTime(t: string): string {
-  if (!t) return 'N/A'
-  try { return new Date(t).toLocaleString('zh-CN') } catch { return t }
+ if (!t) return 'N/A'
+ try { return new Date(t).toLocaleString('zh-CN') } catch { return t }
 }
 
 async function fetchData() {
-  loading.value = true
-  try {
-    const [sess, skills, mem, sys, gw, cfg] = await Promise.all([
-      fetch(`${API}/sessions`).then(r => r.json()),
-      fetch(`${API}/skills`).then(r => r.json()),
-      fetch(`${API}/memories`).then(r => r.json()),
-      fetch(`${API}/system`).then(r => r.json()),
-      fetch(`${API}/gateway`).then(r => r.json()),
-      fetch(`${API}/config`).then(r => r.json())
-    ])
+ loading.value = true
+ try {
+ const [sess, skills, mem, sys, gw, cfg] = await Promise.all([
+ fetch(`${API}/sessions`).then(r => r.json()),
+ fetch(`${API}/skills`).then(r => r.json()),
+ fetch(`${API}/memories`).then(r => r.json()),
+ fetch(`${API}/system`).then(r => r.json()),
+ fetch(`${API}/gateway`).then(r => r.json()),
+ fetch(`${API}/config`).then(r => r.json())
+ ])
 
-    hermesHome.value = cfg?.hermesHome || gw?.hermesHome || '~/.hermes'
+ hermesHome.value = cfg?.hermesHome || gw?.hermesHome || '~/.hermes'
 
-    // 统计数据
-    stats.value = {
-      sessions: Array.isArray(sess) ? sess.length : 0,
-      skills: skills?.count || 0,
-      totalTokens: Array.isArray(sess) ? sess.reduce((sum: number, s: any) => sum + (s.tokens || 0), 0) : 0,
-      memoryEntries: mem?.count || 0
-    }
+ // 统计数据
+ stats.value = {
+ sessions: Array.isArray(sess) ? sess.length : 0,
+ skills: skills?.count || 0,
+ totalTokens: Array.isArray(sess) ? sess.reduce((sum: number, s: any) => sum + (s.tokens || 0), 0) : 0,
+ memoryEntries: mem?.count || 0
+ }
 
-    // 最近会话
-    recentSessions.value = (Array.isArray(sess) ? sess : []).map((s: any) => ({
-      id: s.id,
-      title: s.title || '无标题会话',
-      platform: s.platform,
-      platformIcon: s.platformIcon,
-      messageCount: s.messageCount || 0,
-      tokens: s.tokens || 0,
-      lastActivity: s.lastActivity?.split('T')[0] || s.created || 'N/A'
-    })).slice(0, 5)
+ // 最近会话
+ recentSessions.value = (Array.isArray(sess) ? sess : []).map((s: any) => ({
+ id: s.id,
+ title: s.title || '无标题会话',
+ platform: s.platform,
+ platformIcon: s.platformIcon,
+ messageCount: s.messageCount || 0,
+ tokens: s.tokens || 0,
+ lastActivity: s.lastActivity?.split('T')[0] || s.created || 'N/A'
+ })).slice(0, 5)
 
-    systemInfo.value = sys || {}
-    gatewayState.value = gw || {}
-  } catch (e) {
-    console.error('数据获取失败:', e)
-  } finally {
-    loading.value = false
-  }
+ systemInfo.value = sys || {}
+ gatewayState.value = gw || {}
+ } catch (e) {
+ console.error('数据获取失败:', e)
+ } finally {
+ loading.value = false
+ }
 }
 
-onMounted(fetchData)
+// WebSocket 实时更新系统信息
+let unsubscribeSystem: (() => void) | null = null
+
+onMounted(() => {
+ fetchData()
+ 
+ // 启用 WebSocket 实时更新
+ wsService.connect()
+ unsubscribeSystem = wsService.subscribe('system:update', (data: any) => {
+ systemInfo.value = {
+ ...systemInfo.value,
+ ...data,
+ uptime: data.uptime,
+ cpuLoad: data.cpuLoad,
+ memory: data.memory,
+ memoryPercent: data.memoryPercent,
+ disk: data.disk,
+ diskPercent: data.diskPercent
+ }
+ })
+})
+
+onUnmounted(() => {
+ if (unsubscribeSystem) {
+ unsubscribeSystem()
+ }
+})
 </script>
 
 <style scoped>

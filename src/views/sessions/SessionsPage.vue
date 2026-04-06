@@ -76,10 +76,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, h } from 'vue'
-import { NButton, NSpace, NTag, useMessage, useDialog } from 'naive-ui'
+import { ref, computed, h, onMounted } from 'vue'
+import { NButton, NInput, NSpace, NTag, useMessage, useDialog } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { AddOutline, RefreshOutline } from '@vicons/ionicons5'
+import axios from 'axios'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -96,10 +97,15 @@ interface Session {
 }
 
 const searchText = ref('')
-const filterPlatform = ref(null)
-const filterStatus = ref(null)
+const filterPlatform = ref<string | null>(null)
+const filterStatus = ref<string | null>(null)
 const showDetailDrawer = ref(false)
 const selectedSession = ref<Session | null>(null)
+const loading = ref(false)
+const renamingId = ref<string | null>(null)
+const renamingTitle = ref('')
+
+const sessions = ref<Session[]>([])
 
 const pagination = { pageSize: 10 }
 const platformOptions = [
@@ -112,13 +118,6 @@ const statusOptions = [
   { label: '活跃', value: 'active' },
   { label: '已结束', value: 'ended' }
 ]
-
-const sessions = ref<Session[]>([
-  { id: 's1', title: 'GitHub 项目管理', platform: 'Telegram', status: 'active', created: '2024-01-20 10:30', lastActivity: '刚刚', messageCount: 45, tokens: 12500 },
-  { id: 's2', title: '数据分析讨论', platform: '飞书', status: 'active', created: '2024-01-20 09:15', lastActivity: '5分钟前', messageCount: 32, tokens: 8900 },
-  { id: 's3', title: '技能开发', platform: 'Discord', status: 'ended', created: '2024-01-19 14:00', lastActivity: '昨天', messageCount: 78, tokens: 23400 },
-  { id: 's4', title: '文档整理', platform: '钉钉', status: 'ended', created: '2024-01-18 16:45', lastActivity: '2天前', messageCount: 23, tokens: 6700 }
-])
 
 const sessionMessages = ref([
   { id: 1, role: 'user', content: '帮我看看最近的提交' },
@@ -141,17 +140,117 @@ const filteredSessions = computed(() => {
   return result
 })
 
+/**
+ * API: Load sessions list
+ */
+async function loadSessions() {
+  loading.value = true
+  try {
+    const { data } = await axios.get('/api/sessions')
+    sessions.value = data
+  } catch (err: any) {
+    message.error('加载会话列表失败')
+    console.error('Failed to load sessions:', err)
+  } finally {
+    loading.value = false
+  }
+}
+
+/**
+ * API: Refresh / reload sessions data
+ */
+function refresh() {
+  loadSessions()
+}
+
+/**
+ * API: Delete a session
+ */
+async function deleteSessionById(id: string, title: string): Promise<boolean> {
+  try {
+    await axios.delete(`/api/sessions/${id}`)
+    return true
+  } catch (err: any) {
+    message.error(`删除会话 "${title}" 失败`)
+    console.error('Failed to delete session:', err)
+    return false
+  }
+}
+
+/**
+ * API: Export a session
+ */
+async function exportSession(id: string, title: string) {
+  try {
+    await axios.post(`/api/sessions/export/${id}`)
+    message.success(`会话 "${title}" 导出成功`)
+  } catch (err: any) {
+    message.error(`导出会话 "${title}" 失败`)
+    console.error('Failed to export session:', err)
+  }
+}
+
+/**
+ * API: Rename a session
+ */
+async function renameSession(id: string, newTitle: string) {
+  try {
+    await axios.put(`/api/sessions/${id}/rename`, { title: newTitle })
+    message.success('重命名成功')
+    await loadSessions()
+  } catch (err: any) {
+    message.error('重命名失败')
+    console.error('Failed to rename session:', err)
+  } finally {
+    renamingId.value = null
+  }
+}
+
 const columns: DataTableColumns<Session> = [
   { type: 'selection' },
   { title: 'ID', key: 'id', width: 80 },
-  { title: '标题', key: 'title', ellipsis: { tooltip: true } },
-  { 
-    title: '平台', 
+  {
+    title: '标题',
+    key: 'title',
+    ellipsis: { tooltip: true },
+    render: (row) => {
+      if (renamingId.value === row.id) {
+        return h(NInput, {
+          value: renamingTitle.value,
+          size: 'small',
+          onUpdateValue: (v: string) => { renamingTitle.value = v },
+          onBlur: () => { if (renamingTitle.value.trim()) renameSession(row.id, renamingTitle.value.trim()) },
+          onKeydown: (e: KeyboardEvent) => {
+            if (e.key === 'Enter' && renamingTitle.value.trim()) {
+              renameSession(row.id, renamingTitle.value.trim())
+            } else if (e.key === 'Escape') {
+              renamingId.value = null
+            }
+          },
+          onVnodeMounted: (vnode) => {
+            // Auto-focus the input
+            const el = vnode.el as HTMLElement | null
+            const input = el?.querySelector('input')
+            input?.focus()
+          }
+        })
+      }
+      return h('span', {
+        style: { cursor: 'pointer' },
+        onDblclick: () => {
+          renamingId.value = row.id
+          renamingTitle.value = row.title
+        }
+      }, row.title)
+    }
+  },
+  {
+    title: '平台',
     key: 'platform',
     render: (row) => h(NTag, { type: getPlatformType(row.platform), size: 'small' }, { default: () => row.platform })
   },
-  { 
-    title: '状态', 
+  {
+    title: '状态',
     key: 'status',
     render: (row) => h(NTag, { type: row.status === 'active' ? 'success' : 'default', size: 'small' }, { default: () => row.status === 'active' ? '活跃' : '已结束' })
   },
@@ -161,10 +260,12 @@ const columns: DataTableColumns<Session> = [
   {
     title: '操作',
     key: 'actions',
-    width: 150,
+    width: 200,
     render: (row) => h(NSpace, { size: 'small' }, {
       default: () => [
         h(NButton, { size: 'small', onClick: () => viewDetail(row) }, { default: () => '详情' }),
+        h(NButton, { size: 'small', onClick: () => { renamingId.value = row.id; renamingTitle.value = row.title } }, { default: () => '重命名' }),
+        h(NButton, { size: 'small', type: 'info', onClick: () => exportSession(row.id, row.title) }, { default: () => '导出' }),
         h(NButton, { size: 'small', type: 'error', onClick: () => confirmDelete(row) }, { default: () => '删除' })
       ]
     })
@@ -186,7 +287,7 @@ const handleCheck = (keys: Array<string | number>) => {
 }
 
 const refreshSessions = () => {
-  message.success('会话列表已刷新')
+  refresh()
 }
 
 const createSession = () => {
@@ -216,14 +317,19 @@ const resetSession = () => {
 }
 
 const deleteSession = () => {
+  if (!selectedSession.value) return
   dialog.error({
     title: '确认删除',
     content: '删除后无法恢复，是否继续？',
     positiveText: '删除',
     negativeText: '取消',
-    onPositiveClick: () => {
-      message.success('会话已删除')
-      showDetailDrawer.value = false
+    onPositiveClick: async () => {
+      const ok = await deleteSessionById(selectedSession.value!.id, selectedSession.value!.title)
+      if (ok) {
+        message.success('会话已删除')
+        showDetailDrawer.value = false
+        await loadSessions()
+      }
     }
   })
 }
@@ -234,11 +340,20 @@ const confirmDelete = (row: Session) => {
     content: `确定删除会话 "${row.title}" 吗？`,
     positiveText: '删除',
     negativeText: '取消',
-    onPositiveClick: () => {
-      message.success('删除成功')
+    onPositiveClick: async () => {
+      const ok = await deleteSessionById(row.id, row.title)
+      if (ok) {
+        message.success('删除成功')
+        await loadSessions()
+      }
     }
   })
 }
+
+// Load sessions on mount
+onMounted(() => {
+  loadSessions()
+})
 </script>
 
 <style scoped>

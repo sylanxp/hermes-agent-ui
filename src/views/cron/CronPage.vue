@@ -11,203 +11,207 @@
         </div>
       </template>
 
-      <n-data-table
-        :columns="columns"
-        :data="cronJobs"
-        :pagination="false"
-        :bordered="false"
-      />
+      <n-spin :show="loading">
+        <n-data-table
+          v-if="cronJobs.length > 0"
+          :columns="columns"
+          :data="cronJobs"
+          :pagination="{ pageSize: 10 }"
+          :bordered="false"
+        />
+        <n-empty v-else description="暂无定时任务" />
+      </n-spin>
     </n-card>
 
-    <!-- 创建任务模态框 -->
-    <n-modal v-model:show="showCreateModal" preset="card" title="创建定时任务" style="width: 600px">
-      <n-form :model="createForm" label-placement="left" label-width="100">
-        <n-form-item label="任务名称">
-          <n-input v-model:value="createForm.name" placeholder="例如: daily_report" />
+    <!-- Create Job Modal -->
+    <n-modal v-model:show="showCreateModal" preset="card" title="创建定时任务" style="width: 550px">
+      <n-form :model="createForm" label-placement="left" label-width="80">
+        <n-form-item label="名称">
+          <n-input v-model:value="createForm.name" placeholder="任务名称" />
         </n-form-item>
-        <n-form-item label="调度类型">
-          <n-radio-group v-model:value="createForm.scheduleType">
-            <n-radio-button value="interval">固定间隔</n-radio-button>
-            <n-radio-button value="cron">Cron 表达式</n-radio-button>
-            <n-radio-button value="once">指定时间</n-radio-button>
-          </n-radio-group>
+        <n-form-item label="计划">
+          <n-input v-model:value="createForm.schedule" placeholder="如: 0 9 * * * 或 every 2h" />
+          <n-text depth="3" style="font-size: 12px; margin-top: 4px">支持 cron 表达式或简单间隔 (30m, 1h, 24h)</n-text>
         </n-form-item>
-        <n-form-item label="调度配置">
-          <n-input 
-            v-if="createForm.scheduleType === 'cron'"
-            v-model:value="createForm.schedule" 
-            placeholder="0 9 * * * (每天 9:00)"
-          />
-          <n-input-number 
-            v-else-if="createForm.scheduleType === 'interval'"
-            v-model:value="createForm.interval"
-            :min="1"
-          >
-            <template #suffix>分钟</template>
-          </n-input-number>
-          <n-date-picker 
-            v-else
-            v-model:value="createForm.scheduledTime"
-            type="datetime"
-            clearable
-          />
+        <n-form-item label="提示词">
+          <n-input v-model:value="createForm.prompt" type="textarea" :rows="4" placeholder="定时执行的任务指令..." />
         </n-form-item>
-        <n-form-item label="执行内容">
-          <n-input 
-            v-model:value="createForm.prompt" 
-            type="textarea" 
-            placeholder="描述任务内容..."
-            :rows="4"
-          />
-        </n-form-item>
-        <n-form-item label="投递目标">
+        <n-form-item label="发送目标">
           <n-select v-model:value="createForm.deliver" :options="deliverOptions" />
-        </n-form-item>
-        <n-form-item label="启用状态">
-          <n-switch v-model:value="createForm.enabled" />
         </n-form-item>
       </n-form>
       <template #footer>
         <n-space justify="end">
           <n-button @click="showCreateModal = false">取消</n-button>
-          <n-button type="primary" @click="createCron">创建</n-button>
+          <n-button type="primary" :loading="creating" @click="createJob">创建</n-button>
         </n-space>
       </template>
     </n-modal>
-
-    <!-- 执行历史抽屉 -->
-    <n-drawer v-model:show="showHistoryDrawer" :width="500" placement="right">
-      <n-drawer-content title="执行历史" closable>
-        <n-timeline>
-          <n-timeline-item 
-            v-for="history in executionHistory" 
-            :key="history.id"
-            :type="history.success ? 'success' : 'error'"
-            :title="history.time"
-          >
-            <p>{{ history.status }}</p>
-            <p class="history-output" v-if="history.output">{{ history.output }}</p>
-          </n-timeline-item>
-        </n-timeline>
-      </n-drawer-content>
-    </n-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, h } from 'vue'
-import { NButton, NSpace, NSwitch, NTag, useMessage } from 'naive-ui'
+import { ref, h, onMounted } from 'vue'
+import { useMessage, useDialog, NTag, NButton, NSpace, NText } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import { AddOutline } from '@vicons/ionicons5'
+import { AddOutline, PlayOutline, PauseOutline, TrashOutline } from '@vicons/ionicons5'
 
 const message = useMessage()
+const dialog = useDialog()
+const loading = ref(false)
+const creating = ref(false)
 const showCreateModal = ref(false)
-const showHistoryDrawer = ref(false)
 
 interface CronJob {
   id: string
   name: string
   schedule: string
-  nextRun: string
-  enabled: boolean
-  status: 'running' | 'paused' | 'completed'
+  prompt: string
+  deliver: string
+  paused: boolean
+  nextRun?: string
 }
 
-const cronJobs = ref<CronJob[]>([
-  { id: '1', name: 'daily_report', schedule: '0 9 * * *', nextRun: '明天 09:00', enabled: true, status: 'running' },
-  { id: '2', name: 'health_check', schedule: '每 30 分钟', nextRun: '10:45', enabled: true, status: 'running' },
-  { id: '3', name: 'weekly_summary', schedule: '0 18 * * 5', nextRun: '周五 18:00', enabled: false, status: 'paused' },
-  { id: '4', name: 'backup_data', schedule: '0 2 * * *', nextRun: '明天 02:00', enabled: true, status: 'running' }
-])
-
-const executionHistory = ref([
-  { id: 1, time: '今天 09:00', success: true, status: '执行成功', output: '日报已发送到 Telegram' },
-  { id: 2, time: '昨天 09:00', success: true, status: '执行成功', output: '日报已发送到 Telegram' },
-  { id: 3, time: '前天 09:00', success: false, status: '执行失败', output: 'API 超时，已自动重试' }
-])
-
+const cronJobs = ref<CronJob[]>([])
 const createForm = ref({
   name: '',
-  scheduleType: 'cron',
   schedule: '',
-  interval: 30,
-  scheduledTime: null as number | null,
   prompt: '',
-  deliver: 'telegram',
-  enabled: true
+  deliver: 'origin'
 })
 
 const deliverOptions = [
-  { label: 'Telegram', value: 'telegram' },
-  { label: '飞书', value: 'feishu' },
-  { label: '钉钉', value: 'dingtalk' },
-  { label: '本地文件', value: 'local' }
+  { label: '原路返回', value: 'origin' },
+  { label: '本地文件', value: 'local' },
+  { label: 'Telegram', value: 'telegram' }
 ]
 
 const columns: DataTableColumns<CronJob> = [
-  { title: '任务名称', key: 'name' },
-  { title: '调度配置', key: 'schedule' },
-  { title: '下次执行', key: 'nextRun' },
+  { title: 'ID', key: 'id', width: 80 },
+  { title: '名称', key: 'name', ellipsis: { tooltip: true } },
+  { title: '计划', key: 'schedule', width: 120 },
+  { title: '提示词', key: 'prompt', ellipsis: { tooltip: true } },
   { 
-    title: '状态', 
-    key: 'status',
-    render: (row) => h(NTag, { type: row.enabled ? 'success' : 'default', size: 'small' }, { default: () => row.enabled ? '运行中' : '已暂停' })
+    title: '发送目标', key: 'deliver', width: 100,
+    render: (row) => h(NTag, { type: 'info', size: 'small' }, { default: () => row.deliver })
   },
   {
-    title: '操作',
-    key: 'actions',
-    render: (row) => h(NSpace, null, {
+    title: '状态', key: 'paused', width: 80,
+    render: (row) => h(NTag, {
+      type: row.paused ? 'warning' : 'success',
+      size: 'small'
+    }, { default: () => row.paused ? '已暂停' : '运行中' })
+  },
+  {
+    title: '操作', key: 'actions', width: 200,
+    render: (row) => h(NSpace, { size: 'small' }, {
       default: () => [
-        h(NButton, { size: 'small', onClick: () => toggleJob(row) }, { default: () => row.enabled ? '暂停' : '启用' }),
-        h(NButton, { size: 'small', onClick: () => runJob(row) }, { default: () => '立即执行' }),
-        h(NButton, { size: 'small', onClick: () => showHistory(row) }, { default: () => '历史' }),
-        h(NButton, { size: 'small', type: 'error', onClick: () => deleteJob(row) }, { default: () => '删除' })
+        h(NButton, {
+          size: 'small',
+          type: row.paused ? 'success' : 'warning',
+          onClick: () => toggleJob(row)
+        }, { default: () => row.paused ? '恢复' : '暂停' }),
+        h(NButton, {
+          size: 'small',
+          type: 'error',
+          onClick: () => removeJob(row)
+        }, { default: () => '删除' })
       ]
     })
   }
 ]
 
-const toggleJob = (row: CronJob) => {
-  row.enabled = !row.enabled
-  message.success(row.enabled ? '任务已启用' : '任务已暂停')
+async function loadJobs() {
+  loading.value = true
+  try {
+    const res = await fetch('/api/cron')
+    const data = await res.json()
+    // Parse CLI output or use structured data
+    if (data.jobs) {
+      cronJobs.value = data.jobs
+    } else {
+      // Fallback: try to parse text output
+      cronJobs.value = []
+    }
+  } catch (e) {
+    message.error('加载任务失败')
+  } finally {
+    loading.value = false
+  }
 }
 
-const runJob = (row: CronJob) => {
-  message.info(`正在执行任务: ${row.name}`)
-}
-
-const showHistory = (row: CronJob) => {
-  showHistoryDrawer.value = true
-}
-
-const deleteJob = (row: CronJob) => {
-  message.success(`已删除任务: ${row.name}`)
-}
-
-const createCron = () => {
-  if (!createForm.value.name || !createForm.value.prompt) {
-    message.error('请填写完整信息')
+async function createJob() {
+  if (!createForm.value.prompt || !createForm.value.schedule) {
+    message.warning('请填写计划和时间')
     return
   }
-  message.success('任务创建成功')
-  showCreateModal.value = false
+  creating.value = true
+  try {
+    // We use the CLI via API
+    const res = await fetch('/api/cron/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(createForm.value)
+    })
+    const data = await res.json()
+    if (data.success) {
+      message.success('任务创建成功')
+      showCreateModal.value = false
+      createForm.value = { name: '', schedule: '', prompt: '', deliver: 'origin' }
+      await loadJobs()
+    } else {
+      message.error(data.error || '创建失败')
+    }
+  } catch (e) {
+    message.error('创建失败')
+  } finally {
+    creating.value = false
+  }
 }
+
+async function toggleJob(job: CronJob) {
+  const action = job.paused ? 'resume' : 'pause'
+  try {
+    const res = await fetch(`/api/cron/${action}/${job.id}`, { method: 'POST' })
+    const data = await res.json()
+    if (data.success) {
+      message.success(`已${action === 'pause' ? '暂停' : '恢复'}任务`)
+      await loadJobs()
+    } else {
+      message.error(data.error || '操作失败')
+    }
+  } catch (e) {
+    message.error('操作失败')
+  }
+}
+
+async function removeJob(job: CronJob) {
+  dialog.warning({
+    title: '删除任务',
+    content: `确定删除任务 "${job.name}" 吗？`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        const res = await fetch(`/api/cron/remove/${job.id}`, { method: 'POST' })
+        const data = await res.json()
+        if (data.success) {
+          message.success('已删除')
+          await loadJobs()
+        } else {
+          message.error(data.error || '删除失败')
+        }
+      } catch (e) {
+        message.error('删除失败')
+      }
+    }
+  })
+}
+
+onMounted(loadJobs)
 </script>
 
 <style scoped>
-.cron-page {
-  max-width: 1200px;
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.history-output {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.6);
-  margin-top: 4px;
-}
+.cron-page { max-width: 1200px; }
+.card-header { display: flex; justify-content: space-between; align-items: center; }
 </style>

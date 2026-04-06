@@ -1,193 +1,138 @@
 <template>
   <div class="models-page">
-    <n-card>
-      <template #header>
-        <div class="card-header">
-          <span>模型配置</span>
-          <n-button type="primary" @click="showAddModal = true">
-            <template #icon><n-icon><AddOutline /></n-icon></template>
-            添加模型
-          </n-button>
-        </div>
-      </template>
+    <n-spin :show="loading">
+      <!-- Current Model -->
+      <n-card title="当前模型" style="margin-bottom: 24px">
+        <n-descriptions :column="2" label-placement="left" bordered>
+          <n-descriptions-item label="模型">{{ currentModel || '未设置' }}</n-descriptions-item>
+          <n-descriptions-item label="Provider">{{ currentProvider || '未设置' }}</n-descriptions-item>
+        </n-descriptions>
+      </n-card>
 
-      <n-grid :cols="3" :x-gap="16" :y-gap="16">
-        <n-gi v-for="model in models" :key="model.id">
-          <n-card class="model-card" :class="{ 'model-default': model.isDefault }">
-            <div class="model-header">
-              <div class="model-icon">
-                <n-icon :size="28"><component :is="getModelIcon(model.provider)" /></n-icon>
-              </div>
-              <div class="model-info">
-                <h3>{{ model.name }}</h3>
-                <n-tag size="small" :type="getProviderType(model.provider)">{{ model.provider }}</n-tag>
-              </div>
-              <n-switch v-model:value="model.enabled" size="small" />
-            </div>
-            <n-divider style="margin: 12px 0" />
-            <n-descriptions :column="1" size="small">
-              <n-descriptions-item label="模型ID">
-                <n-text code>{{ model.modelId }}</n-text>
-              </n-descriptions-item>
-              <n-descriptions-item label="API Base">{{ model.apiBase }}</n-descriptions-item>
-              <n-descriptions-item label="调用次数">{{ model.calls.toLocaleString() }}</n-descriptions-item>
-              <n-descriptions-item label="状态">
-                <n-tag :type="model.status === 'ok' ? 'success' : 'error'" size="small">
-                  {{ model.status === 'ok' ? '正常' : '异常' }}
-                </n-tag>
-              </n-descriptions-item>
-            </n-descriptions>
-            <template #footer>
-              <n-space justify="space-between">
-                <n-button size="small" @click="testModel(model)">
-                  <template #icon><n-icon><PlayOutline /></n-icon></template>
-                  测试
-                </n-button>
-                <n-space>
-                  <n-button size="small" @click="editModel(model)">
-                    <template #icon><n-icon><CreateOutline /></n-icon></template>
-                  </n-button>
-                  <n-button size="small" :type="model.isDefault ? 'warning' : 'default'" @click="setDefault(model)">
-                    {{ model.isDefault ? '默认' : '设为默认' }}
-                  </n-button>
-                </n-space>
-              </n-space>
-            </template>
-          </n-card>
-        </n-gi>
-      </n-grid>
-    </n-card>
-
-    <!-- 添加模型模态框 -->
-    <n-modal v-model:show="showAddModal" preset="card" title="添加模型配置" style="width: 500px">
-      <n-form :model="modelForm" label-placement="left" label-width="80">
-        <n-form-item label="名称">
-          <n-input v-model:value="modelForm.name" placeholder="显示名称" />
-        </n-form-item>
-        <n-form-item label="提供商">
-          <n-select v-model:value="modelForm.provider" :options="providerOptions" />
-        </n-form-item>
-        <n-form-item label="模型ID">
-          <n-input v-model:value="modelForm.modelId" placeholder="例如: gpt-4o" />
-        </n-form-item>
-        <n-form-item label="API Key">
-          <n-input v-model:value="modelForm.apiKey" type="password" show-password-on="click" placeholder="sk-..." />
-        </n-form-item>
-        <n-form-item label="API Base">
-          <n-input v-model:value="modelForm.apiBase" placeholder="https://api.openai.com/v1" />
-        </n-form-item>
-      </n-form>
-      <template #footer>
-        <n-space justify="end">
-          <n-button @click="showAddModal = false">取消</n-button>
-          <n-button type="primary" @click="saveModel">保存</n-button>
-        </n-space>
-      </template>
-    </n-modal>
+      <!-- Available Models -->
+      <n-card title="可用模型">
+        <n-data-table
+          :columns="columns"
+          :data="availableModels"
+          :bordered="false"
+          :pagination="{ pageSize: 20 }"
+          size="small"
+        />
+      </n-card>
+    </n-spin>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
-import { useMessage } from 'naive-ui'
-import { AddOutline, CreateOutline, PlayOutline, CloudOutline, RocketOutline, SparklesOutline } from '@vicons/ionicons5'
+import { ref, h, onMounted } from 'vue'
+import { useMessage, useDialog, NTag, NButton, NSpace } from 'naive-ui'
+import type { DataTableColumns } from 'naive-ui'
 
 const message = useMessage()
-const showAddModal = ref(false)
+const dialog = useDialog()
+const loading = ref(false)
+const changing = ref(false)
 
-const models = ref([
-  { id: '1', name: 'GPT-4o', provider: 'OpenAI', modelId: 'gpt-4o', apiBase: 'https://api.openai.com/v1', enabled: true, isDefault: true, calls: 12500, status: 'ok' },
-  { id: '2', name: 'Claude 3.5 Sonnet', provider: 'Anthropic', modelId: 'claude-3-5-sonnet-20241022', apiBase: 'https://api.anthropic.com', enabled: true, isDefault: false, calls: 8900, status: 'ok' },
-  { id: '3', name: 'Gemini Pro', provider: 'Google', modelId: 'gemini-2.5-pro', apiBase: 'https://generativelanguage.googleapis.com', enabled: true, isDefault: false, calls: 5600, status: 'ok' },
-  { id: '4', name: 'DeepSeek', provider: 'DeepSeek', modelId: 'deepseek-chat', apiBase: 'https://api.deepseek.com', enabled: false, isDefault: false, calls: 1200, status: 'ok' }
-])
+const currentModel = ref('')
+const currentProvider = ref('')
 
-const modelForm = ref({
-  name: '',
-  provider: 'OpenAI',
-  modelId: '',
-  apiKey: '',
-  apiBase: ''
-})
+interface ModelInfo {
+  name: string
+  provider: string
+  isCurrent: boolean
+}
 
-const providerOptions = [
-  { label: 'OpenAI', value: 'OpenAI' },
-  { label: 'Anthropic', value: 'Anthropic' },
-  { label: 'Google', value: 'Google' },
-  { label: 'DeepSeek', value: 'DeepSeek' },
-  { label: 'OpenRouter', value: 'OpenRouter' }
+const availableModels = ref<ModelInfo[]>([])
+
+const columns: DataTableColumns<ModelInfo> = [
+  { title: '模型名称', key: 'name', ellipsis: { tooltip: true } },
+  {
+    title: 'Provider',
+    key: 'provider',
+    width: 150,
+    render: (row) => h(NTag, {
+      type: row.isCurrent ? 'success' : 'default',
+      size: 'small'
+    }, { default: () => row.provider })
+  },
+  {
+    title: '状态',
+    key: 'isCurrent',
+    width: 80,
+    render: (row) => h(NTag, {
+      type: row.isCurrent ? 'success' : 'default',
+      size: 'small'
+    }, { default: () => row.isCurrent ? '当前' : '可用' })
+  },
+  {
+    title: '操作',
+    key: 'actions',
+    width: 120,
+    render: (row) => h(NButton, {
+      size: 'small',
+      type: row.isCurrent ? 'default' : 'primary',
+      disabled: row.isCurrent,
+      loading: changing.value,
+      onClick: () => switchModel(row)
+    }, { default: () => row.isCurrent ? '使用中' : '切换' })
+  }
 ]
 
-const getModelIcon = (provider: string) => {
-  const icons: Record<string, any> = {
-    'OpenAI': SparklesOutline,
-    'Anthropic': RocketOutline,
-    'Google': CloudOutline,
-    'DeepSeek': RocketOutline
+async function loadModels() {
+  loading.value = true
+  try {
+    const res = await fetch('/api/models')
+    const data = await res.json()
+    currentModel.value = data.current || data.defaultModel || 'N/A'
+    currentProvider.value = data.provider || 'unknown'
+    availableModels.value = (data.available || []).map((m: string) => {
+      const provider = m.split('/')[0] || 'default'
+      return {
+        name: m,
+        provider: m.includes('/') ? m.split('/')[0] : data.provider || 'default',
+        isCurrent: m === data.current || m === data.defaultModel
+      }
+    })
+  } catch (e) {
+    message.error('加载模型列表失败')
+  } finally {
+    loading.value = false
   }
-  return icons[provider] || CloudOutline
 }
 
-const getProviderType = (provider: string): 'success' | 'info' | 'warning' | 'default' => {
-  const types: Record<string, 'success' | 'info' | 'warning' | 'default'> = {
-    'OpenAI': 'success',
-    'Anthropic': 'info',
-    'Google': 'warning',
-    'DeepSeek': 'default'
-  }
-  return types[provider] || 'default'
+async function switchModel(model: ModelInfo) {
+  dialog.info({
+    title: '切换模型',
+    content: `确定将默认模型切换为 ${model.name} 吗？`,
+    positiveText: '确认切换',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      changing.value = true
+      try {
+        const res = await fetch('/api/config/model', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: model.name, provider: model.provider })
+        })
+        const data = await res.json()
+        if (data.success) {
+          message.success(`已切换为 ${model.name}`)
+          await loadModels()
+        } else {
+          message.error(data.error || '切换失败')
+        }
+      } catch (e) {
+        message.error('切换失败')
+      } finally {
+        changing.value = false
+      }
+    }
+  })
 }
 
-const testModel = (model: any) => {
-  message.loading(`正在测试 ${model.name}...`)
-  setTimeout(() => {
-    message.success(`${model.name} 连接正常`)
-  }, 1500)
-}
-
-const editModel = (model: any) => {
-  message.info(`编辑模型: ${model.name}`)
-}
-
-const setDefault = (model: any) => {
-  models.value.forEach(m => m.isDefault = false)
-  model.isDefault = true
-  message.success(`已将 ${model.name} 设为默认模型`)
-}
-
-const saveModel = () => {
-  message.success('模型配置已保存')
-  showAddModal.value = false
-}
+onMounted(loadModels)
 </script>
 
 <style scoped>
-.models-page {
-  max-width: 1200px;
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.model-card {
-  transition: all 0.3s;
-}
-
-.model-card.model-default {
-  border: 2px solid #63e6be;
-}
-
-.model-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.model-info h3 {
-  margin: 0;
-  font-size: 16px;
-}
+.models-page { max-width: 1000px; }
 </style>

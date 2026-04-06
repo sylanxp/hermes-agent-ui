@@ -16,10 +16,10 @@
           </n-input>
           <n-list hoverable clickable>
             <n-list-item 
-              v-for="session in sessions" 
+              v-for="session in filteredSessions" 
               :key="session.id"
               :class="{ 'active-session': activeSession === session.id }"
-              @click="activeSession = session.id"
+              @click="selectSession(session.id)"
             >
               <n-thing>
                 <template #header>{{ session.title }}</template>
@@ -58,8 +58,8 @@
               :autosize="{ minRows: 1, maxRows: 4 }"
               @keydown="handleKeydown"
             />
-            <n-button type="primary" circle @click="sendMessage" :disabled="!inputMessage.trim()">
-              <template #icon><n-icon><SendOutline /></n-icon></template>
+            <n-button type="primary" circle @click="sendMessage" :loading="isSending" :disabled="!inputMessage.trim()">
+              <template #icon><n-icon v-if="!isSending"><SendOutline /></n-icon></template>
             </n-button>
           </div>
         </n-card>
@@ -69,37 +69,142 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import { useMessage } from 'naive-ui'
 import { AddOutline, SearchOutline, SendOutline } from '@vicons/ionicons5'
 
-const message = useMessage()
+const messageApi = useMessage()
 const searchSession = ref('')
-const activeSession = ref('1')
+const activeSession = ref('')
 const inputMessage = ref('')
-const messagesRef = ref()
+const messagesRef = ref<HTMLElement>()
+const isSending = ref(false)
 
-const sessions = ref([
-  { id: '1', title: 'GitHub 项目管理', platform: 'Telegram', time: '10:30' },
-  { id: '2', title: '公众号文章整理', platform: '飞书', time: '09:15' },
-  { id: '3', title: '技能开发讨论', platform: 'Web', time: '昨天' },
-  { id: '4', title: '数据分析任务', platform: 'Telegram', time: '3天前' }
-])
+const sessions = ref<{ id: string; title: string; platform: string; time: string }[]>([])
+const messages = ref<{ id: string | number; role: string; content: string; time: string }[]>([])
 
-const messages = ref([
-  { id: 1, role: 'user', content: '帮我看看最近仓库的动态', time: '10:30' },
-  { id: 2, role: 'assistant', content: '我来帮你检查 GitHub 仓库的最近活动...', time: '10:30' },
-  { id: 3, role: 'assistant', content: '**最近的仓库活动：**\n\n- `wk-Auto-update`: 最新提交 2 小时前\n- `hermes-agent-dashboard`: 刚刚创建\n- 有 3 个待处理的 PR\n\n需要我帮你处理哪个？', time: '10:31' },
-  { id: 4, role: 'user', content: '查看 PR 详情', time: '10:32' },
-  { id: 5, role: 'assistant', content: '好的，正在获取 PR 详情...', time: '10:32' }
-])
+// Filtered sessions based on search
+const filteredSessions = computed(() => {
+  if (!searchSession.value) return sessions.value
+  const q = searchSession.value.toLowerCase()
+  return sessions.value.filter(s => 
+    s.title.toLowerCase().includes(q) || s.platform.toLowerCase().includes(q)
+  )
+})
 
+// Simple markdown renderer
 const renderMarkdown = (text: string) => {
   return text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
              .replace(/`(.*?)`/g, '<code>$1</code>')
              .replace(/\n/g, '<br>')
 }
 
+const getTimestamp = () => {
+  return new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+}
+
+// Auto-scroll to bottom whenever messages change
+watch(messages, () => {
+  nextTick(() => {
+    if (messagesRef.value) {
+      messagesRef.value.scrollTop = messagesRef.value.scrollHeight
+    }
+  })
+}, { deep: true })
+
+// ---- API: Load session list ----
+const loadSessions = async () => {
+  try {
+    const resp = await fetch('/api/sessions')
+    if (!resp.ok) throw new Error(`Failed to load sessions (${resp.status})`)
+    const data = await resp.json()
+    sessions.value = (Array.isArray(data) ? data : (data.sessions ?? [])).map((s: any) => ({
+      id: s.id ?? s.sessionId ?? String(Math.random()),
+      title: s.title ?? s.name ?? '未命名会话',
+      platform: s.platform ?? s.source ?? 'Web',
+      time: s.updatedAt ?? s.time ?? getTimestamp()
+    }))
+  } catch (err: any) {
+    console.error('loadSessions error:', err)
+    messageApi.error('加载会话列表失败')
+    sessions.value = []
+  }
+}
+
+// ---- API: Load messages for a session ----
+const loadMessages = async (sessionId: string) => {
+  try {
+    const resp = await fetch(`/api/chat/messages?sessionId=${encodeURIComponent(sessionId)}`)
+    if (!resp.ok) throw new Error(`Failed to load messages (${resp.status})`)
+    const data = await resp.json()
+    const msgArr = Array.isArray(data) ? data : (data.messages ?? [])
+    messages.value = msgArr.map((m: any, idx: number) => ({
+      id: m.id ?? idx + 1,
+      role: m.role ?? 'assistant',
+      content: m.content ?? m.text ?? '',
+      time: m.time ?? m.createdAt ?? getTimestamp()
+    }))
+  } catch (err: any) {
+    console.error('loadMessages error:', err)
+    messageApi.error('加载消息失败')
+    messages.value = []
+  }
+}
+
+// ---- Select a session ----
+const selectSession = async (sessionId: string) => {
+  activeSession.value = sessionId
+  messages.value = []
+  await loadMessages(sessionId)
+}
+
+// ---- API: Send a message ----
+const sendMessage = async () => {
+  const text = inputMessage.value.trim()
+  if (!text || !activeSession.value || isSending.value) return
+
+  // Optimistically show user message
+  const userMsg = {
+    id: Date.now(),
+    role: 'user' as const,
+    content: text,
+    time: getTimestamp()
+  }
+  messages.value.push(userMsg)
+  inputMessage.value = ''
+
+  isSending.value = true
+
+  try {
+    const resp = await fetch('/api/chat/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: activeSession.value, message: text })
+    })
+    if (!resp.ok) throw new Error(`Send failed (${resp.status})`)
+
+    const data = await resp.json()
+
+    // Support both shape: { id, role, content } and { message: { ... } } and { reply: ... }
+    const replyId = data.id ?? data.message?.id ?? Date.now() + 1
+    const replyRole = data.role ?? data.message?.role ?? 'assistant'
+    const replyContent = data.content ?? data.message?.content ?? data.reply ?? data.text ?? '（无回复）'
+
+    messages.value.push({
+      id: replyId,
+      role: replyRole,
+      content: replyContent,
+      time: getTimestamp()
+    })
+  } catch (err: any) {
+    console.error('sendMessage error:', err)
+    messageApi.error('发送消息失败')
+  } finally {
+    isSending.value = false
+  }
+}
+
+// ---- Keyboard handler ----
 const handleKeydown = (e: KeyboardEvent) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
@@ -107,23 +212,42 @@ const handleKeydown = (e: KeyboardEvent) => {
   }
 }
 
-const sendMessage = () => {
-  if (!inputMessage.value.trim()) return
-  messages.value.push({
-    id: Date.now(),
-    role: 'user',
-    content: inputMessage.value,
-    time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-  })
-  inputMessage.value = ''
-  nextTick(() => {
-    messagesRef.value?.scrollTo({ top: messagesRef.value.scrollHeight, behavior: 'smooth' })
-  })
+// ---- Create new session ----
+const newSession = async () => {
+  try {
+    const resp = await fetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    })
+    if (!resp.ok) throw new Error(`Create session failed (${resp.status})`)
+    const data = await resp.json()
+    const newId = data.id ?? data.sessionId ?? String(Date.now())
+    // Refresh session list then select new session
+    await loadSessions()
+    await selectSession(newId)
+    messageApi.success('已创建新会话')
+  } catch (err: any) {
+    console.error('newSession error:', err)
+    // Fallback: create a local session entry
+    const fallbackId = String(Date.now())
+    sessions.value.unshift({
+      id: fallbackId,
+      title: '新会话',
+      platform: 'Web',
+      time: getTimestamp()
+    })
+    await selectSession(fallbackId)
+  }
 }
 
-const newSession = () => {
-  message.info('新建会话')
-}
+// ---- Initial load ----
+onMounted(async () => {
+  await loadSessions()
+  if (sessions.value.length > 0) {
+    await selectSession(sessions.value[0].id)
+  }
+})
 </script>
 
 <style scoped>
