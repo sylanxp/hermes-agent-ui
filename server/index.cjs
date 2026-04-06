@@ -934,22 +934,134 @@ app.put('/api/config', (req, res) => {
 
 // GET /api/models
 app.get('/api/models', async (req, res) => {
-  try {
-    const config = parseConfig();
-    const knownModels = [
-      'claude-sonnet-4-20250514', 'claude-opus-4-20250416',
-      'gpt-4o', 'gpt-4o-mini', 'gpt-5',
-      'qwen/qwen3.5-sonar', 'qwen/qwen3.6-plus', 'qwen/qwen3-max',
-      'gpt-oss-120b', 'gemini-2.5-flash'
-    ];
-    res.json({ 
-      current: config['model.default'] || config.default || 'N/A', 
-      provider: config['model.provider'] || config.provider || 'unknown', 
-      available: knownModels 
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+ try {
+  const config = parseConfig();
+  const knownModels = [
+   'claude-sonnet-4-20250514', 'claude-opus-4-20250416',
+   'gpt-4o', 'gpt-4o-mini', 'gpt-5',
+   'qwen/qwen3.5-sonar', 'qwen/qwen3.6-plus', 'qwen/qwen3-max',
+   'gpt-oss-120b', 'gemini-2.5-flash'
+  ];
+  res.json({ 
+   current: config['model.default'] || config.default || 'N/A', 
+   provider: config['model.provider'] || config.provider || 'unknown', 
+   available: knownModels 
+  });
+ } catch (e) {
+  res.status(500).json({ error: e.message });
+ }
+});
+
+// ── Usage Statistics ───────────────────────────────────────
+
+// GET /api/usage - Token usage history for dashboard charts
+app.get('/api/usage', (req, res) => {
+ const { startDate, endDate, mode } = req.query;
+ const sessionsFile = path.join(HERMES_HOME, 'sessions', 'sessions.json');
+ const data = readJSON(sessionsFile, {});
+ 
+ // Parse all sessions and aggregate by date
+ const dailyUsage = {};
+ const sessionsList = [];
+ 
+ for (const [key, session] of Object.entries(data)) {
+  if (!session || typeof session !== 'object') continue;
+  
+  const updatedAt = session.updated_at || session.created_at;
+  if (!updatedAt) continue;
+  
+  const date = updatedAt.split('T')[0];
+  const tokens = session.total_tokens || 0;
+  const inputTokens = session.input_tokens || 0;
+  const outputTokens = session.output_tokens || 0;
+  const cost = session.estimated_cost_usd || 0;
+  const messages = session.message_count || 0;
+  
+  if (!dailyUsage[date]) {
+   dailyUsage[date] = { 
+    date, 
+    tokens: 0, 
+    input: 0, 
+    output: 0, 
+    cost: 0, 
+    messages: 0, 
+    sessions: 0,
+    toolCalls: 0,
+    errors: 0
+   };
   }
+  
+  dailyUsage[date].tokens += tokens;
+  dailyUsage[date].input += inputTokens;
+  dailyUsage[date].output += outputTokens;
+  dailyUsage[date].cost += cost;
+  dailyUsage[date].messages += messages;
+  dailyUsage[date].sessions += 1;
+  
+  sessionsList.push({
+   key,
+   date,
+   tokens,
+   input: inputTokens,
+   output: outputTokens,
+   cost,
+   messages,
+   model: session.model || 'unknown',
+   platform: session.platform || 'unknown'
+  });
+ }
+ 
+ // Convert to array and sort by date
+ const daily = Object.values(dailyUsage).sort((a, b) => a.date.localeCompare(b.date));
+ 
+ // Filter by date range if provided
+ let filtered = daily;
+ if (startDate || endDate) {
+  filtered = daily.filter(d => {
+   if (startDate && d.date < startDate) return false;
+   if (endDate && d.date > endDate) return false;
+   return true;
+  });
+ }
+ 
+ // Calculate totals
+ const totals = filtered.reduce((acc, d) => ({
+  input: acc.input + d.input,
+  output: acc.output + d.output,
+  totalTokens: acc.totalTokens + d.tokens,
+  totalCost: acc.totalCost + d.cost,
+  messages: acc.messages + d.messages,
+  sessions: acc.sessions + d.sessions
+ }), { input: 0, output: 0, totalTokens: 0, totalCost: 0, messages: 0, sessions: 0 });
+ 
+ // Aggregate by model
+ const byModel = {};
+ const byPlatform = {};
+ for (const s of sessionsList) {
+  const model = s.model || 'unknown';
+  const platform = s.platform || 'unknown';
+  
+  if (!byModel[model]) byModel[model] = { model, tokens: 0, cost: 0, sessions: 0 };
+  byModel[model].tokens += s.tokens;
+  byModel[model].cost += s.cost;
+  byModel[model].sessions += 1;
+  
+  if (!byPlatform[platform]) byPlatform[platform] = { platform, tokens: 0, cost: 0, sessions: 0 };
+  byPlatform[platform].tokens += s.tokens;
+ byPlatform[platform].cost += s.cost;
+ byPlatform[platform].sessions += 1;
+ }
+ 
+ res.json({
+  daily: filtered,
+  totals,
+  sessions: sessionsList.length,
+  aggregates: {
+   byModel: Object.values(byModel).sort((a, b) => b.tokens - a.tokens).slice(0, 10),
+   byPlatform: Object.values(byPlatform).sort((a, b) => b.tokens - a.tokens)
+  },
+  range: { startDate: startDate || daily[0]?.date, endDate: endDate || daily[daily.length - 1]?.date }
+ });
 });
 
 // PUT /api/config/model
